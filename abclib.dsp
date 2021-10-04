@@ -4915,6 +4915,10 @@ SOURCE=.\src\aig\gia\giaCut.c
 # End Source File
 # Begin Source File
 
+SOURCE=.\src\aig\gia\giaDecs.c
+# End Source File
+# Begin Source File
+
 SOURCE=.\src\aig\gia\giaDeep.c
 # End Source File
 # Begin Source File
@@ -5063,6 +5067,10 @@ SOURCE=.\src\aig\gia\giaMinLut.c
 # End Source File
 # Begin Source File
 
+SOURCE=.\src\aig\gia\giaMinLut2.c
+# End Source File
+# Begin Source File
+
 SOURCE=.\src\aig\gia\giaMuxes.c
 # End Source File
 # Begin Source File
@@ -5091,11 +5099,23 @@ SOURCE=.\src\aig\gia\giaQbf.c
 # End Source File
 # Begin Source File
 
+SOURCE=.\src\aig\gia\giaReshape1.c
+# End Source File
+# Begin Source File
+
+SOURCE=.\src\aig\gia\giaReshape2.c
+# End Source File
+# Begin Source File
+
 SOURCE=.\src\aig\gia\giaResub.c
 # End Source File
 # Begin Source File
 
 SOURCE=.\src\aig\gia\giaResub2.c
+# End Source File
+# Begin Source File
+
+SOURCE=.\src\aig\gia\giaResub3.c
 # End Source File
 # Begin Source File
 
@@ -5163,14 +5183,6 @@ SOURCE=.\src\aig\gia\giaSim2.c
 # End Source File
 # Begin Source File
 
-SOURCE=.\src\aig\gia\giaSim4.c
-# End Source File
-# Begin Source File
-
-SOURCE=.\src\aig\gia\giaSim5.c
-# End Source File
-# Begin Source File
-
 SOURCE=.\src\aig\gia\giaSimBase.c
 # End Source File
 # Begin Source File
@@ -5200,6 +5212,10 @@ SOURCE=.\src\aig\gia\giaSupMin.c
 # Begin Source File
 
 SOURCE=.\src\aig\gia\giaSupp.c
+# End Source File
+# Begin Source File
+
+SOURCE=.\src\aig\gia\giaSupps.c
 # End Source File
 # Begin Source File
 
