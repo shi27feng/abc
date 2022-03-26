@@ -7312,8 +7312,8 @@ usage:
 ***********************************************************************/
 int Abc_CommandRewrite( Abc_Frame_t * pAbc, int argc, char ** argv )
 {
-    Abc_Ntk_t * pNtk = Abc_FrameReadNtk(pAbc);
-    int c;
+    Abc_Ntk_t * pNtk = Abc_FrameReadNtk(pAbc), * pDup;
+    int c, RetValue;
     int fUpdateLevel;
     int fPrecompute;
     int fUseZeros;
@@ -7383,10 +7383,21 @@ int Abc_CommandRewrite( Abc_Frame_t * pAbc, int argc, char ** argv )
     }
 
     // modify the current network
-    if ( !Abc_NtkRewrite( pNtk, fUpdateLevel, fUseZeros, fVerbose, fVeryVerbose, fPlaceEnable ) )
+    pDup = Abc_NtkDup( pNtk );
+    RetValue = Abc_NtkRewrite( pNtk, fUpdateLevel, fUseZeros, fVerbose, fVeryVerbose, fPlaceEnable );
+    if ( RetValue == -1 )
     {
-        Abc_Print( -1, "Rewriting has failed.\n" );
-        return 1;
+        Abc_FrameReplaceCurrentNetwork( pAbc, pDup );
+        printf( "An error occurred during computation. The original network is restored.\n" );
+    }
+    else
+    {
+        Abc_NtkDelete( pDup );
+        if ( RetValue == 0 )
+        {
+            Abc_Print( 0, "Rewriting has failed.\n" );
+            return 1;
+        }
     }
     return 0;
 
@@ -7415,8 +7426,8 @@ usage:
 ***********************************************************************/
 int Abc_CommandRefactor( Abc_Frame_t * pAbc, int argc, char ** argv )
 {
-    Abc_Ntk_t * pNtk = Abc_FrameReadNtk(pAbc);
-    int c;
+    Abc_Ntk_t * pNtk = Abc_FrameReadNtk(pAbc), * pDup;
+    int c, RetValue;
     int nNodeSizeMax;
     int nConeSizeMax;
     int fUpdateLevel;
@@ -7506,10 +7517,21 @@ int Abc_CommandRefactor( Abc_Frame_t * pAbc, int argc, char ** argv )
     }
 
     // modify the current network
-    if ( !Abc_NtkRefactor( pNtk, nNodeSizeMax, nConeSizeMax, fUpdateLevel, fUseZeros, fUseDcs, fVerbose ) )
+    pDup = Abc_NtkDup( pNtk );
+    RetValue = Abc_NtkRefactor( pNtk, nNodeSizeMax, nConeSizeMax, fUpdateLevel, fUseZeros, fUseDcs, fVerbose );
+    if ( RetValue == -1 )
     {
-        Abc_Print( -1, "Refactoring has failed.\n" );
-        return 1;
+        Abc_FrameReplaceCurrentNetwork( pAbc, pDup );
+        printf( "An error occurred during computation. The original network is restored.\n" );
+    }
+    else
+    {
+        Abc_NtkDelete( pDup );
+        if ( RetValue == 0 )
+        {
+            Abc_Print( 0, "Refactoring has failed.\n" );
+            return 1;
+        }
     }
     return 0;
 
@@ -37868,7 +37890,22 @@ int Abc_CommandAbc9Cec( Abc_Frame_t * pAbc, int argc, char ** argv )
         }
     }
     // compute the miter
-    pMiter = Gia_ManMiter( pGias[0], pGias[1], 0, !fUseNew, 0, 0, pPars->fVerbose );
+    if ( Gia_ManCiNum(pGias[0]) < 6 )
+    {
+        Gia_Man_t * pGias0 = Gia_ManDup( pGias[0] );
+        Gia_Man_t * pGias1 = Gia_ManDup( pGias[1] );
+        for ( c = Gia_ManCiNum(pGias[0]); c < 6; c++ )
+        {
+            Gia_ManAppendCi(pGias0);
+            Gia_ManAppendCi(pGias1);
+        }
+        pMiter = Gia_ManMiter( pGias0, pGias1, 0, !fUseNew, 0, 0, pPars->fVerbose );
+        Gia_ManStop( pGias0 );
+        Gia_ManStop( pGias1 );
+    }
+    else
+        pMiter = Gia_ManMiter( pGias[0], pGias[1], 0, !fUseNew, 0, 0, pPars->fVerbose );
+
     if ( pMiter )
     {
         if ( fDumpMiter )
