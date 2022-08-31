@@ -48,6 +48,8 @@ struct Rtl_Lib_t_
     Vec_Int_t *           vTokens;   // temp tokens
     int                   pMap[MAX_MAP];  // temp map
     Vec_Int_t *           vMap;      // mapping NameId into wires
+    Vec_Int_t *           vDirects;  // direct equivalences
+    Vec_Int_t *           vInverses; // inverse equivalences
     Vec_Int_t             vAttrTemp; // temp
     Vec_Int_t             vTemp[TEMP_NUM];  // temp
 };
@@ -73,6 +75,7 @@ struct Rtl_Ntk_t_
     int                   Slice0;    // first slice
     int                   Slice1;    // last slice
     int                   iCopy;     // place in array
+    int                   fRoot;     // denote root network
 };
 
 static inline int         Rtl_LibNtkNum( Rtl_Lib_t * pLib )                { return Vec_PtrSize(pLib->vNtks);                  }
@@ -155,6 +158,8 @@ static inline int         Rtl_SigIsConcat( int s )                         { ret
     Rtl_CellForEachConnect( p, pCell, Par, Val, i ) if ( i <  Rtl_CellInputNum(pCell) ) continue; else
 
 extern Gia_Man_t * Cec4_ManSimulateTest3( Gia_Man_t * p, int nBTLimit, int fVerbose );
+extern int         Abc_NtkFromGiaCollapse( Gia_Man_t * pGia );
+extern int         Wln_ReadFindToken( char * pToken, Abc_Nam_t * p );
 
 ////////////////////////////////////////////////////////////////////////
 ///                     FUNCTION DEFINITIONS                         ///
@@ -322,6 +327,8 @@ void Rtl_LibFree( Rtl_Lib_t * p )
     for ( i = 0; i < TEMP_NUM; i++ )
         ABC_FREE( p->vTemp[i].pArray );
     Vec_IntFreeP( &p->vMap );
+    Vec_IntFreeP( &p->vDirects );
+    Vec_IntFreeP( &p->vInverses );
     Vec_IntFreeP( &p->vTokens );
     Abc_NamStop( p->pManName );
     Vec_PtrFree( p->vNtks );
@@ -356,17 +363,24 @@ int Rtl_LibFindTwoModules( Rtl_Lib_t * p, int Name1, int Name2 )
     int iNtk1 = Rtl_LibFindModule( p, Name1 );
     if ( Name2 == -1 )
         return (iNtk1 << 16) | iNtk1;
+    else if ( iNtk1 == -1 )
+        return -1;
     else
     {
         int Counts1[4] = {0}, Counts2[4] = {0};
         int iNtk2 = Rtl_LibFindModule( p, Name2 );
-        Rtl_Ntk_t * pNtk1 = Rtl_LibNtk( p, iNtk1 );
-        Rtl_Ntk_t * pNtk2 = Rtl_LibNtk( p, iNtk2 );
-        Rtl_NtkCountPio( pNtk1, Counts1 );
-        Rtl_NtkCountPio( pNtk2, Counts2 );
-        if ( Counts1[1] != Counts2[1] || Counts1[3] != Counts2[3] )
-            iNtk1 = Rtl_LibFindModule2( p, Name1, iNtk2 );
-        return (iNtk1 << 16) | iNtk2;
+        if ( iNtk2 == -1 )
+            return -1;
+        else
+        {
+            Rtl_Ntk_t * pNtk1 = Rtl_LibNtk( p, iNtk1 );
+            Rtl_Ntk_t * pNtk2 = Rtl_LibNtk( p, iNtk2 );
+            Rtl_NtkCountPio( pNtk1, Counts1 );
+            Rtl_NtkCountPio( pNtk2, Counts2 );
+            if ( Counts1[1] != Counts2[1] || Counts1[3] != Counts2[3] )
+                iNtk1 = Rtl_LibFindModule2( p, Name1, iNtk2 );
+            return (iNtk1 << 16) | iNtk2;
+        }
     }
 }
 void Rtl_LibPrintStats( Rtl_Lib_t * p )
@@ -1432,6 +1446,18 @@ void Rtl_LibReorderModules_rec( Rtl_Ntk_t * p, Vec_Ptr_t * vNew )
     p->iCopy = Vec_PtrSize(vNew);
     Vec_PtrPush( vNew, p );
 }
+int Rtl_LibCountInsts( Rtl_Lib_t * p, Rtl_Ntk_t * pOne )
+{
+    Rtl_Ntk_t * pNtk; int n, i, * pCell, Count = 0;
+    Vec_PtrForEachEntry( Rtl_Ntk_t *, p->vNtks, pNtk, n )
+        Rtl_NtkForEachCell( pNtk, pCell, i )
+        {
+            Rtl_Ntk_t * pMod = Rtl_CellNtk( pNtk, pCell );
+            if ( pMod && pMod == pOne ) 
+                Count++;
+        }
+    return Count;
+}
 void Rtl_NtkUpdateBoxes( Rtl_Ntk_t * p )
 {
     int i, * pCell;
@@ -1710,6 +1736,42 @@ int Rtl_NtkInsertSignalRange( Rtl_Ntk_t * p, int Sig, int * pLits, int nLits )
   SeeAlso     []
 
 ***********************************************************************/
+Vec_Int_t * Rtl_NtkRevPermInput( Rtl_Ntk_t * p )
+{
+    Vec_Int_t * vNew = Vec_IntAlloc( 100 ); int b, i, Count = 0;
+    for ( i = 0; i < p->nInputs; i++ )
+    {
+        int Width = Rtl_WireWidth( p, i );
+        for ( b = 0; b < Width; b++ )
+            Vec_IntPush( vNew, Count + Width-1-b );
+        Count += Width;
+    }
+    return vNew;
+}
+Vec_Int_t * Rtl_NtkRevPermOutput( Rtl_Ntk_t * p )
+{
+    Vec_Int_t * vNew = Vec_IntAlloc( 100 );  int b, i, Count = 0;
+    for ( i = 0; i < p->nOutputs; i++ )
+    {
+        int Width = Rtl_WireWidth( p, p->nInputs + i );
+        for ( b = 0; b < Width; b++ )
+            Vec_IntPush( vNew, Count + Width-1-b );
+        Count += Width;
+    }
+    return vNew;
+}
+
+/**Function*************************************************************
+
+  Synopsis    []
+
+  Description []
+               
+  SideEffects []
+
+  SeeAlso     []
+
+***********************************************************************/
 void Rtl_NtkBlastInputs( Gia_Man_t * pNew, Rtl_Ntk_t * p )
 {
     int b, i;
@@ -1749,17 +1811,50 @@ void Rtl_NtkBlastConnect( Gia_Man_t * pNew, Rtl_Ntk_t * p, int * pCon )
 }
 void Rtl_NtkBlastHierarchy( Gia_Man_t * pNew, Rtl_Ntk_t * p, int * pCell )
 {
+    extern void Rtl_NtkPrintBufs( Rtl_Ntk_t * p, Vec_Int_t * vBufs );
     extern Gia_Man_t * Rtl_NtkBlast( Rtl_Ntk_t * p );
-    extern void Gia_ManDupRebuild( Gia_Man_t * pNew, Gia_Man_t * p, Vec_Int_t * vLits );
+    extern void Gia_ManDupRebuild( Gia_Man_t * pNew, Gia_Man_t * p, Vec_Int_t * vLits, int fBufs );
+    extern int Gia_ManFindFirst( Rtl_Ntk_t * p, int * pnOuts );
     Rtl_Ntk_t * pModel = Rtl_NtkModule( p, Rtl_CellModule(pCell)-ABC_INFINITY );
-    int k, Par, Val, nBits = 0;
+    int nIns = 0, nOuts = 0, nOuts1, iFirst1 = Gia_ManFindFirst( pModel, &nOuts1 );
+    int k, Par, Val, iThis = -1, nBits = 0;
+    //int fFound = 0;
+    int fFound = p->pLib->vInverses && (iThis = Vec_IntFind(p->pLib->vInverses, pModel->NameId)) >= 0;
+    //int iThat = fFound ? Vec_IntEntry( p->pLib->vInverses, iThis ^ 1 ) : -1;
     Vec_IntClear( &p->vBitTemp );
     Rtl_CellForEachInput( p, pCell, Par, Val, k )
         Rtl_NtkCollectSignalRange( p, Val );
-//    if ( pModel->pGia == NULL )
-//        pModel->pGia = Rtl_NtkBlast( pModel );
     assert( pModel->pGia );
-    Gia_ManDupRebuild( pNew, pModel->pGia, &p->vBitTemp );
+    if ( fFound )
+    {
+        nIns = nOuts1;
+        Vec_IntForEachEntry( &p->vBitTemp, Val, k )
+            Vec_IntWriteEntry( &p->vBitTemp, k, (k >= iFirst1 && k < iFirst1 + nOuts1) ? Gia_ManAppendBuf(pNew, Val) : Val );
+        Vec_IntPush( pNew->vBarBufs, (nIns << 16) | Abc_Var2Lit(pModel->NameId, 0) );
+    }
+    else if ( pModel->fRoot )
+    {
+        nIns = Vec_IntSize(&p->vBitTemp);
+        Vec_IntForEachEntry( &p->vBitTemp, Val, k )
+            //Vec_IntWriteEntry( &p->vBitTemp, k, (k >= iFirst1 && k < iFirst1 + nOuts1) ? Gia_ManAppendBuf(pNew, Val) : Val );
+            Vec_IntWriteEntry( &p->vBitTemp, k, Gia_ManAppendBuf(pNew, Val) );
+        Vec_IntPush( pNew->vBarBufs, (nIns << 16) | Abc_Var2Lit(pModel->NameId, 0) );
+    }
+    if ( fFound || pModel->fRoot )
+        Gia_ManDupRebuild( pNew, pModel->pGia, &p->vBitTemp, 0 );
+    else
+    {
+        Gia_ManDupRebuild( pNew, pModel->pGia, &p->vBitTemp, 1 );
+        Vec_IntAppend( pNew->vBarBufs, pModel->pGia->vBarBufs );
+    }
+    if ( pModel->fRoot || fFound )
+    {
+        nOuts = Vec_IntSize(&p->vBitTemp);
+        Vec_IntForEachEntry( &p->vBitTemp, Val, k )
+            Vec_IntWriteEntry( &p->vBitTemp, k, Gia_ManAppendBuf(pNew, Val) );
+        Vec_IntPush( pNew->vBarBufs, (nOuts << 16) | Abc_Var2Lit(pModel->NameId, 1) );
+        printf( "Added %d input buffers and %d output buffers for module %s.\n", nIns, nOuts, Rtl_NtkName(pModel) );
+    }
     Rtl_CellForEachOutput( p, pCell, Par, Val, k )
         nBits += Rtl_NtkInsertSignalRange( p, Val, Vec_IntArray(&p->vBitTemp)+nBits, Vec_IntSize(&p->vBitTemp)-nBits );
     assert( nBits == Vec_IntSize(&p->vBitTemp) );
@@ -1821,11 +1916,25 @@ char * Rtl_ShortenName( char * pName, int nSize )
     Buffer[nSize-0] = 0;
     return Buffer;
 }
+void Rtl_NtkPrintBufOne( Rtl_Lib_t * p, int Lit )
+{
+    printf( "%s (%c%d)  ", Rtl_LibStr(p, Abc_Lit2Var(Lit&0xFFFF)), Abc_LitIsCompl(Lit)? 'o' : 'i', Lit >> 16 );
+}
+void Rtl_NtkPrintBufs( Rtl_Ntk_t * p, Vec_Int_t * vBufs )
+{
+    int i, Lit;
+    if ( Vec_IntSize(vBufs) )
+        printf( "Found %d buffers (%d groups):  ", p->pGia->nBufs, Vec_IntSize(vBufs) );
+    Vec_IntForEachEntry( vBufs, Lit, i )
+        Rtl_NtkPrintBufOne( p->pLib, Lit );
+    if ( Vec_IntSize(vBufs) )
+        printf( "\n" );
+}
 Gia_Man_t * Rtl_NtkBlast( Rtl_Ntk_t * p )
 {
+    int fDump = 0;
     Gia_Man_t * pTemp, * pNew = Gia_ManStart( 1000 );
     int i, iObj, * pCell, nBits = Rtl_NtkRangeWires( p );
-    char Buffer[100]; static int counter = 0;
     Vec_IntFill( &p->vLits, nBits, -1 );
     Rtl_NtkMapWires( p, 0 );
     Rtl_NtkBlastInputs( pNew, p );
@@ -1853,11 +1962,16 @@ Gia_Man_t * Rtl_NtkBlast( Rtl_Ntk_t * p )
     Rtl_NtkMapWires( p, 1 );
     pNew = Gia_ManCleanup( pTemp = pNew );
     Gia_ManStop( pTemp );
-
-sprintf( Buffer, "old%02d.aig", counter++ );
-Gia_AigerWrite( pNew, Buffer, 0, 0, 0 );
-printf( "Dumped \"%s\" with AIG for module %-20s : ", Buffer, Rtl_ShortenName(Rtl_NtkName(p), 20) );
-Gia_ManPrintStats( pNew, NULL );
+    if ( fDump )
+    {
+        char Buffer[100]; static int counter = 0;
+        sprintf( Buffer, "old%02d.aig", counter++ );
+        Gia_AigerWrite( pNew, Buffer, 0, 0, 0 );
+        printf( "Dumped \"%s\" with AIG for module %-20s : ", Buffer, Rtl_ShortenName(Rtl_NtkName(p), 20) );
+    }
+    else
+        printf( "Derived AIG for module %-20s : ", Rtl_ShortenName(Rtl_NtkName(p), 20) );
+    Gia_ManPrintStats( pNew, NULL );
     return pNew;
 }
 void Rtl_LibBlast( Rtl_Lib_t * pLib )
@@ -2059,15 +2173,16 @@ void Rtl_NtkBlast2_rec( Rtl_Ntk_t * p, int iBit, int * pDriver )
 }
 Gia_Man_t * Rtl_NtkBlast2( Rtl_Ntk_t * p )
 {
+    int fDump = 0;
     Gia_Man_t * pTemp;
     int i, b, nBits = Rtl_NtkRangeWires( p );
-    char Buffer[100]; static int counter = 0;
     Vec_IntFill( &p->vLits, nBits, -1 );
 printf( "Blasting %s...\r", Rtl_NtkName(p) );
     Rtl_NtkMapWires( p, 0 );
     Rtl_NtkBlastMap( p, nBits );
     assert( p->pGia == NULL );
     p->pGia = Gia_ManStart( 1000 );
+    p->pGia->vBarBufs = Vec_IntAlloc( 1000 );
     Rtl_NtkBlastInputs( p->pGia, p );
     Gia_ManHashAlloc( p->pGia );
     for ( i = 0; i < p->nOutputs; i++ )
@@ -2081,12 +2196,20 @@ printf( "Blasting %s...\r", Rtl_NtkName(p) );
     Rtl_NtkBlastOutputs( p->pGia, p );
     Rtl_NtkMapWires( p, 1 );
     p->pGia = Gia_ManCleanup( pTemp = p->pGia );
+    ABC_SWAP( Vec_Int_t *, p->pGia->vBarBufs, pTemp->vBarBufs );
     Gia_ManStop( pTemp );
-
-sprintf( Buffer, "new%02d.aig", counter++ );
-Gia_AigerWrite( p->pGia, Buffer, 0, 0, 0 );
-printf( "Dumped \"%s\" with AIG for module %-20s : ", Buffer, Rtl_ShortenName(Rtl_NtkName(p), 20) );
-Gia_ManPrintStats( p->pGia, NULL );
+//    if ( p->fRoot )
+//        Rtl_NtkPrintBufs( p, p->pGia->vBarBufs );
+    if ( fDump )
+    {
+        char Buffer[100]; static int counter = 0;
+        sprintf( Buffer, "old%02d.aig", counter++ );
+        Gia_AigerWrite( p->pGia, Buffer, 0, 0, 0 );
+        printf( "Dumped \"%s\" with AIG for module %-20s : ", Buffer, Rtl_ShortenName(Rtl_NtkName(p), 20) );
+    }
+    else
+        printf( "Derived AIG for module %-20s : ", Rtl_ShortenName(Rtl_NtkName(p), 20) );
+    Gia_ManPrintStats( p->pGia, NULL );
     return p->pGia;
 }
 void Rtl_LibMark_rec( Rtl_Ntk_t * pNtk )
@@ -2103,7 +2226,7 @@ void Rtl_LibMark_rec( Rtl_Ntk_t * pNtk )
     assert( pNtk->iCopy == -2 );
     pNtk->iCopy = -1;
 }
-void Rtl_LibBlast2( Rtl_Lib_t * pLib, Vec_Int_t * vRoots )
+void Rtl_LibBlast2( Rtl_Lib_t * pLib, Vec_Int_t * vRoots, int fInv )
 {
     Rtl_Ntk_t * pNtk; int i, iNtk;
     Vec_PtrForEachEntry( Rtl_Ntk_t *, pLib->vNtks, pNtk, i )
@@ -2111,9 +2234,13 @@ void Rtl_LibBlast2( Rtl_Lib_t * pLib, Vec_Int_t * vRoots )
     if ( vRoots )
     {
         Vec_PtrForEachEntry( Rtl_Ntk_t *, pLib->vNtks, pNtk, i )
-            pNtk->iCopy = -2;
+            pNtk->iCopy = -2;//, pNtk->fRoot = 0;
         Vec_IntForEachEntry( vRoots, iNtk, i )
-            Rtl_LibMark_rec( Rtl_LibNtk(pLib, iNtk) );
+        {
+            Rtl_Ntk_t * pNtk = Rtl_LibNtk(pLib, iNtk);
+            //pNtk->fRoot = fInv;
+            Rtl_LibMark_rec( pNtk );
+        }
     }
     Vec_PtrForEachEntry( Rtl_Ntk_t *, pLib->vNtks, pNtk, i )
         if ( pNtk->iCopy == -1 && pNtk->pGia == NULL )
@@ -2211,15 +2338,21 @@ finish:
         if ( p != p1 && p != p2 )
             Gia_ManStopP( &p->pGia );
     //Rtl_LibBlast( pLib );
-    Rtl_LibBlast2( pLib, NULL );
+    Rtl_LibBlast2( pLib, NULL, 0 );
 }
 void Rtl_LibSolve( Rtl_Lib_t * pLib, void * pNtk )
 {
+    extern Gia_Man_t * Gia_ManReduceBuffers( Rtl_Lib_t * pLib, Gia_Man_t * p );
     abctime clk = Abc_Clock(); int Status;
-    Rtl_Ntk_t * pTop = pNtk ? (Rtl_Ntk_t *)pNtk : Rtl_LibTop( pLib );
-    Gia_Man_t * pSwp = Cec4_ManSimulateTest3( pTop->pGia, 1000000, 0 );
+    Rtl_Ntk_t * pTop  = pNtk ? (Rtl_Ntk_t *)pNtk : Rtl_LibTop( pLib );
+    Gia_Man_t * pGia2 = Gia_ManReduceBuffers( pLib, pTop->pGia );
+    Gia_Man_t * pSwp  = Cec4_ManSimulateTest3( pGia2, 1000000, 0 );
     int RetValue = Gia_ManAndNum(pSwp);
+    char * pFileName = "miter_to_solve.aig";
+    printf( "Dumped the miter into file \"%s\".\n", pFileName );
+    Gia_AigerWrite( pGia2, pFileName, 0, 0, 0 );
     Gia_ManStop( pSwp );
+    Gia_ManStop( pGia2 );
     if ( RetValue == 0 )
         printf( "Verification problem solved after SAT sweeping!  " );
     else
@@ -2263,14 +2396,19 @@ void Wln_SolveEqual( Rtl_Lib_t * p, int iNtk1, int iNtk2 )
     else if ( 1 )
     {
         Gia_Man_t * pGia = Gia_ManMiter( pNtk1->pGia, pNtk2->pGia, 0, 0, 0, 0, 0 );
-        Gia_Man_t * pNew = Cec4_ManSimulateTest3( pGia, 10000000, 0 );
-        //printf( "Miter %d -> %d\n",  Gia_ManAndNum(pGia),  Gia_ManAndNum(pNew) );
-        if ( Gia_ManAndNum(pNew) == 0 )
-            Abc_Print( 1, "Networks are equivalent.  " );
+        if ( Abc_NtkFromGiaCollapse( pGia ) )
+            Abc_Print( 1, "Networks are equivalent after collapsing.  " );
         else
-            Abc_Print( 1, "Networks are UNDECIDED.  " );
-        Gia_ManStopP( &pNew );
-        Gia_ManStopP( &pGia );
+        {
+            Gia_Man_t * pNew = Cec4_ManSimulateTest3( pGia, 10000000, 0 );
+            //printf( "Miter %d -> %d\n",  Gia_ManAndNum(pGia),  Gia_ManAndNum(pNew) );
+            if ( Gia_ManAndNum(pNew) == 0 )
+                Abc_Print( 1, "Networks are equivalent.  " );
+            else
+                Abc_Print( 1, "Networks are UNDECIDED.  " );
+            Gia_ManStopP( &pNew );
+            Gia_ManStopP( &pGia );
+        }
     }
     else
     {
@@ -2284,7 +2422,7 @@ void Wln_SolveEqual( Rtl_Lib_t * p, int iNtk1, int iNtk2 )
 }
 int Gia_ManFindFirst( Rtl_Ntk_t * p, int * pnOuts )
 {
-    int i, * pWire, iFirst = -1, Counts[4] = {0}, nBits = 0;
+    int i, * pWire, Counts[4] = {0}, nBits = 0;
     assert( p->nOutputs == 1 );
     Rtl_NtkForEachWire( p, pWire, i )
     {
@@ -2316,8 +2454,48 @@ Gia_Man_t * Gia_ManMoveSharedFirst( Gia_Man_t * pGia, int iFirst, int nBits )
             if ( n == (i >= iFirst && i < iFirst + nBits) )
                 Vec_IntPush( vPiPerm, i );
     pTemp = Gia_ManDupPerm( pGia, vPiPerm );
+    if ( pGia->vBarBufs )
+        pTemp->vBarBufs = Vec_IntDup( pGia->vBarBufs );
     Vec_IntFree( vPiPerm );
     return pTemp;
+}
+Vec_Int_t * Gia_ManCollectBufs( Gia_Man_t * p, int iFirst, int nBufs )
+{
+    Vec_Int_t * vRes = Vec_IntAlloc( 100 );
+    Gia_Obj_t * pObj; int i, iBuf = 0;
+    assert( iFirst >= 0 && iFirst + nBufs < p->nBufs );
+    Gia_ManForEachAnd( p, pObj, i )
+    {
+        if ( Gia_ObjIsBuf(pObj) && iBuf >= iFirst && iBuf < iFirst + nBufs )
+            Vec_IntPush( vRes, i );
+        iBuf += Gia_ObjIsBuf(pObj);
+    }
+    assert( iBuf == p->nBufs );
+    return vRes;
+}
+Gia_Man_t * Gia_ManReduceBuffers( Rtl_Lib_t * pLib, Gia_Man_t * p )
+{
+    Gia_Man_t * pNew;
+    Vec_Int_t * vMap = Vec_IntStartFull( Gia_ManObjNum(p) );
+    Vec_Int_t * vOne = Gia_ManCollectBufs( p, 0,       64 );
+    Vec_Int_t * vTwo = Gia_ManCollectBufs( p, 1280-64, 64 );
+    //Vec_Int_t * vOne = Gia_ManCollectBufs( p, 0,      1280/2 );
+    //Vec_Int_t * vTwo = Gia_ManCollectBufs( p, 1280/2, 1280/2 );
+    int i, One, Two;
+    printf( "Reducing %d buffers... Size(vOne) = %d. Size(vTwo) = %d. \n", p->nBufs, Vec_IntSize(vOne), Vec_IntSize(vTwo) );
+    assert( p->nBufs == 1280 );
+    Vec_IntForEachEntryTwo( vOne, vTwo, One, Two, i )
+        Vec_IntWriteEntry( vMap, Two, One );
+    Vec_IntFree( vOne );
+    Vec_IntFree( vTwo );
+Gia_ManPrintStats( p, NULL );
+    //pNew = Gia_ManDupNoBuf( p );
+    pNew = Gia_ManDupMap( p, vMap );
+Gia_ManPrintStats( pNew, NULL );
+    Vec_IntFree( vMap );
+    //Rtl_NtkPrintBufs( pNtk1, pGia->vBarBufs );
+    //printf( "Found %d buffers.\n", p->nBufs );
+    return pNew;
 }
 void Wln_SolveInverse( Rtl_Lib_t * p, int iNtk1, int iNtk2 )
 {
@@ -2331,14 +2509,27 @@ void Wln_SolveInverse( Rtl_Lib_t * p, int iNtk1, int iNtk2 )
     Gia_Man_t * pGia2 = Gia_ManMoveSharedFirst( pNtk2->pGia, iFirst2, nOuts2 );
     if ( 1 )
     {
+        char * pFileName  = "inv_miter.aig";
         Gia_Man_t * pGia  = Gia_ManMiterInverse( pGia1, pGia2, 0, 0 );
-        Gia_Man_t * pNew  = Cec4_ManSimulateTest3( pGia, 10000000, 0 );
-        //printf( "Miter %d -> %d\n",  Gia_ManAndNum(pGia),  Gia_ManAndNum(pNew) );
-        if ( Gia_ManAndNum(pNew) == 0 )
-            Abc_Print( 1, "Networks are equivalent.  " );
+        //Gia_Man_t * pGia2 = Gia_ManReduceBuffers( p, pGia );
+        Gia_Man_t * pGia2 = Gia_ManDupNoBuf( pGia );
+        printf( "Dumping inverse miter into file \"%s\".\n", pFileName );
+        Gia_AigerWrite( pGia2, pFileName, 0, 0, 0 );
+        printf( "Dumped the miter into file \"%s\".\n", pFileName );
+        if ( Abc_NtkFromGiaCollapse( pGia2 ) )
+            Abc_Print( 1, "Networks are equivalent after collapsing.  " );
         else
-            Abc_Print( 1, "Networks are UNDECIDED.  " );
-        Gia_ManStopP( &pNew );
+        {
+            Gia_Man_t * pNew  = Cec4_ManSimulateTest3( pGia2, 10000000, 0 );
+            Rtl_NtkPrintBufs( pNtk1, pGia->vBarBufs );
+            //printf( "Miter %d -> %d\n",  Gia_ManAndNum(pGia),  Gia_ManAndNum(pNew) );
+            if ( Gia_ManAndNum(pNew) == 0 )
+                Abc_Print( 1, "Networks are equivalent.  " );
+            else
+                Abc_Print( 1, "Networks are UNDECIDED.  " );
+            Gia_ManStopP( &pNew );
+        }
+        Gia_ManStopP( &pGia2 );
         Gia_ManStopP( &pGia );
     }
     else
@@ -2358,6 +2549,7 @@ void Wln_SolveProperty( Rtl_Lib_t * p, int iNtk )
 {
     Rtl_Ntk_t * pNtk = Rtl_LibNtk( p, iNtk );
     printf( "\nProving property \"%s\".\n", Rtl_NtkName(pNtk) );
+    Rtl_NtkPrintBufs( pNtk, pNtk->pGia->vBarBufs );
     Rtl_LibSolve( p, pNtk );
 }
 Vec_Int_t * Wln_ReadNtkRoots( Rtl_Lib_t * p, Vec_Wec_t * vGuide ) 
@@ -2390,13 +2582,16 @@ void Wln_SolveWithGuidance( char * pFileName, Rtl_Lib_t * p )
 {
     extern Vec_Wec_t * Wln_ReadGuidance( char * pFileName, Abc_Nam_t * p );
     Vec_Wec_t * vGuide = Wln_ReadGuidance( pFileName, p->pManName );
-    Vec_Int_t * vRoots, * vLevel; int i, iNtk1, iNtk2;
+    Vec_Int_t * vRoots, * vLevel; int i, iNtk1, iNtk2, fInv = 0;
+    Vec_WecForEachLevel( vGuide, vLevel, i )
+        if ( Vec_IntEntry( vLevel, 1 ) == Rtl_LibStrId(p, "inverse") )
+            fInv = 1;
     Vec_IntFillExtra( p->vMap, Abc_NamObjNumMax(p->pManName), -1 );
     Rtl_LibSetReplace( p, vGuide );
     Rtl_LibUpdateBoxes( p );
     Rtl_LibReorderModules( p );
     vRoots = Wln_ReadNtkRoots( p, vGuide );
-    Rtl_LibBlast2( p, vRoots );
+    Rtl_LibBlast2( p, vRoots, fInv );
     Vec_WecForEachLevel( vGuide, vLevel, i )
     {
         int Prove = Vec_IntEntry( vLevel, 0 );
@@ -2430,6 +2625,317 @@ void Wln_SolveWithGuidance( char * pFileName, Rtl_Lib_t * p )
     Rtl_LibBlastClean( p );
     Vec_WecFree( vGuide );
     Vec_IntFree( vRoots );
+}
+
+/**Function*************************************************************
+
+  Synopsis    []
+
+  Description []
+               
+  SideEffects []
+
+  SeeAlso     []
+
+***********************************************************************/
+
+static inline void Gia_ManPatchBufDriver( Gia_Man_t * p, int iObj, int iLit0 )  
+{
+    Gia_Obj_t * pObj  = Gia_ManObj( p, iObj );
+    assert( iObj > Abc_Lit2Var(iLit0) );
+    pObj->iDiff0  = pObj->iDiff1  = iObj - Abc_Lit2Var(iLit0);
+    pObj->fCompl0 = pObj->fCompl1 = Abc_LitIsCompl(iLit0);
+}
+
+Gia_Man_t * Rtl_ReduceInverse( Rtl_Lib_t * pLib, Gia_Man_t * p )
+{
+    int fVerbose = 1;
+    Gia_Man_t * pNew   = NULL;
+    Vec_Wec_t * vBufs  = Vec_WecStart( Vec_IntSize(p->vBarBufs) );
+    Vec_Int_t * vPairs = Vec_IntAlloc( 10 );
+    Vec_Int_t * vTypes = Vec_IntAlloc( p->nBufs );
+    Vec_Int_t * vMap = Vec_IntStartFull( Gia_ManObjNum(p) );
+    Gia_Obj_t * pObj; int i, k = 0, Entry, Buf0, Buf1, fChange = 1;
+    Vec_IntForEachEntry( p->vBarBufs, Entry, i )
+        Vec_IntFillExtra( vTypes, Vec_IntSize(vTypes) + (Entry >> 16), i );
+    assert( Vec_IntSize(vTypes) == p->nBufs );
+    Gia_ManForEachAnd( p, pObj, i )
+        if ( Gia_ObjIsBuf(pObj) )
+        {
+            Vec_WecPush( vBufs, Vec_IntEntry(vTypes, k), i );
+            Vec_IntWriteEntry( vMap, i, Vec_IntEntry(vTypes, k++) );
+        }
+    assert( k == p->nBufs );
+    Gia_ManForEachAnd( p, pObj, i )
+        if ( Gia_ObjIsBuf(pObj) && Gia_ObjIsBuf(Gia_ObjFanin0(pObj)) )
+            Vec_IntPushUnique( vPairs, (Vec_IntEntry(vMap, Gia_ObjFaninId0(pObj, i)) << 16) | (Vec_IntEntry(vMap, i) & 0xFFFF) );
+    if ( fVerbose )
+    {
+        printf( "Connected boundaries:\n" );
+        Vec_IntForEachEntry( vPairs, Entry, i )
+        {
+            printf( "%2d -> %2d : ", Entry >> 16, Entry & 0xFFFF );
+            Rtl_NtkPrintBufOne( pLib, Vec_IntEntry(p->vBarBufs, Entry >> 16) );
+            printf( " -> "  );
+            Rtl_NtkPrintBufOne( pLib, Vec_IntEntry(p->vBarBufs, Entry & 0xFFFF) );
+            printf( "\n" );
+        }
+    }
+    while ( fChange )
+    {
+        int Entry1, Entry2, j;
+        fChange = 0;
+        Vec_IntForEachEntryDouble( vPairs, Entry1, Entry2, j )
+            if ( (Entry1 & 0xFFFF) + 1 == (Entry2 >> 16) ) 
+            {
+                Vec_IntWriteEntry( vPairs, j, ((Entry1 >> 16) << 16) | (Entry2 & 0xFFFF) );
+                Vec_IntDrop( vPairs, j+1 );  
+                fChange = 1;
+                break;
+            }
+    }
+//    printf( "Before:\n" );
+//    Vec_IntForEachEntry( vPairs, Entry, i )
+//        printf( "%d %d\n", Entry >> 16, Entry & 0xFFFF );
+    Vec_IntForEachEntry( vPairs, Entry, i )
+        Vec_IntWriteEntry( vPairs, i, (((Entry >> 16) - 1) << 16) | ((Entry & 0xFFFF) + 1) );
+//    printf( "After:\n" );
+//    Vec_IntForEachEntry( vPairs, Entry, i )
+//        printf( "%d %d\n", Entry >> 16, Entry & 0xFFFF );
+    if ( fVerbose )
+    {
+        printf( "Transformed boundaries:\n" );
+        Vec_IntForEachEntry( vPairs, Entry, i )
+        {
+            printf( "%2d -> %2d : ", Entry >> 16, Entry & 0xFFFF );
+            Rtl_NtkPrintBufOne( pLib, Vec_IntEntry(p->vBarBufs, Entry >> 16) );
+            printf( " -> "  );
+            Rtl_NtkPrintBufOne( pLib, Vec_IntEntry(p->vBarBufs, Entry & 0xFFFF) );
+            printf( "\n" );
+        }
+    }
+    Vec_IntForEachEntry( vPairs, Entry, i )
+    {
+        Vec_Int_t * vLevel0 = Vec_WecEntry( vBufs, Entry >> 16    );
+        Vec_Int_t * vLevel1 = Vec_WecEntry( vBufs, Entry & 0xFFFF );
+        Vec_IntForEachEntryTwo( vLevel0, vLevel1, Buf0, Buf1, k )
+            Gia_ManPatchBufDriver( p, Buf1, Gia_ObjFaninLit0(Gia_ManObj(p, Buf0), Buf0) );
+    }
+    pNew = Gia_ManRehash( p, 0 );
+    Vec_IntFree( vPairs );
+    Vec_IntFree( vTypes );
+    Vec_IntFree( vMap );
+    Vec_WecFree( vBufs );
+    return pNew;
+}
+
+/**Function*************************************************************
+
+  Synopsis    []
+
+  Description []
+               
+  SideEffects []
+
+  SeeAlso     []
+
+***********************************************************************/
+Gia_Man_t * Gia_ManDupPermIO( Gia_Man_t * p, Vec_Int_t * vPermI, Vec_Int_t * vPermO )
+{
+    Gia_Man_t * pNew;
+    Gia_Obj_t * pObj;
+    int i;
+    assert( Vec_IntSize(vPermI) == Gia_ManCiNum(p) );
+    assert( Vec_IntSize(vPermO) == Gia_ManCoNum(p) );
+    pNew = Gia_ManStart( Gia_ManObjNum(p) );
+    Gia_ManConst0(p)->Value = 0;
+    Gia_ManForEachCi( p, pObj, i )
+        Gia_ManCi(p, Vec_IntEntry(vPermI, i))->Value = Gia_ManAppendCi(pNew);
+    Gia_ManForEachAnd( p, pObj, i )
+    {
+        if ( Gia_ObjIsBuf(pObj) )
+            pObj->Value = Gia_ManAppendBuf( pNew, Gia_ObjFanin0Copy(pObj) );
+        else
+            pObj->Value = Gia_ManAppendAnd( pNew, Gia_ObjFanin0Copy(pObj), Gia_ObjFanin1Copy(pObj) );
+        assert( Abc_Lit2Var(pObj->Value) == i );
+    }
+    Gia_ManForEachCo( p, pObj, i )
+        Gia_ManAppendCo( pNew, Gia_ObjFanin0Copy(Gia_ManCo(p, Vec_IntEntry(vPermO, i))) );
+    return pNew;
+}
+
+/**Function*************************************************************
+
+  Synopsis    []
+
+  Description []
+               
+  SideEffects []
+
+  SeeAlso     []
+
+***********************************************************************/
+int Rtl_LibReturnNtk( Rtl_Lib_t * p, char * pModule )
+{
+    int NameId = Wln_ReadFindToken( pModule, p->pManName );
+    int iNtk   = NameId ? Rtl_LibFindModule( p, NameId )  : -1;
+    if ( iNtk == -1 )
+    {
+        printf( "Cannot find module \"%s\" in the current design.\n", pModule );
+        return -1;
+    }
+    return iNtk;
+}
+Gia_Man_t * Rtl_LibCollapse( Rtl_Lib_t * p, char * pTopModule, int fRev, int fVerbose )
+{
+    Gia_Man_t * pGia = NULL;
+    int NameId = Wln_ReadFindToken( pTopModule, p->pManName );
+    int iNtk   = NameId ? Rtl_LibFindModule( p, NameId ) : -1;
+    if ( iNtk == -1 )
+    {
+        printf( "Cannot find top module \"%s\".\n", pTopModule );
+        return NULL;
+    }
+    else
+    {
+        abctime clk = Abc_Clock(); 
+        Rtl_Ntk_t * pTop = Rtl_LibNtk(p, iNtk);
+        Vec_Int_t * vRoots = Vec_IntAlloc( 1 );
+        Vec_IntPush( vRoots, iNtk );
+        Rtl_LibBlast2( p, vRoots, 1 );
+        pGia = Gia_ManDup( pTop->pGia );
+        if ( fRev )
+        {
+            Gia_Man_t * pTemp;
+            Vec_Int_t * vPermI = Rtl_NtkRevPermInput( pTop );
+            Vec_Int_t * vPermO = Rtl_NtkRevPermOutput( pTop );
+            pGia = Gia_ManDupPermIO( pTemp = pGia, vPermI, vPermO );
+            Vec_IntFree( vPermI );
+            Vec_IntFree( vPermO );
+            Gia_ManStop( pTemp );
+        }
+        //Gia_AigerWrite( pGia, "temp_miter.aig", 0, 0, 0 );
+        if ( pTop->pGia->vBarBufs )
+            pGia->vBarBufs = Vec_IntDup( pTop->pGia->vBarBufs );
+        printf( "Derived global AIG for the top module \"%s\".  ", Rtl_NtkStr(pTop, NameId) );
+        Abc_PrintTime( 1, "Time", Abc_Clock() - clk );
+        Rtl_NtkPrintBufs( pTop, pGia->vBarBufs );
+        Rtl_LibBlastClean( p );
+        Vec_IntFree( vRoots );
+        if ( p->vInverses )
+        {
+            Gia_Man_t * pTemp;
+            pGia = Rtl_ReduceInverse( p, pTemp = pGia );
+            Gia_ManStop( pTemp );
+        }
+    }
+    return pGia;
+}
+
+/**Function*************************************************************
+
+  Synopsis    []
+
+  Description []
+               
+  SideEffects []
+
+  SeeAlso     []
+
+***********************************************************************/
+void Wln_LibGraftOne( Rtl_Lib_t * p, char ** pModules, int nModules, int fInv, int fVerbose )
+{
+    if ( nModules == 0 )
+    {
+        Rtl_Ntk_t * pNtk; int i;
+        Vec_PtrForEachEntry( Rtl_Ntk_t *, p->vNtks, pNtk, i )
+            pNtk->iCopy = -1;
+        Vec_IntFreeP( &p->vInverses );
+        if ( p->vDirects )
+        {
+            int iName1, iName2;
+            Vec_IntForEachEntryDouble( p->vDirects, iName1, iName2, i )
+            {
+                int iNtk1 = Rtl_LibFindModule(p, iName1);
+                int iNtk2 = Rtl_LibFindModule(p, iName2);
+                //Rtl_Ntk_t * pNtk1 = Rtl_LibNtk( p, iNtk1 );
+                Rtl_Ntk_t * pNtk2 = Rtl_LibNtk( p, iNtk2 );
+                pNtk2->iCopy = iNtk1;
+            }
+            Rtl_LibUpdateBoxes( p );
+            Rtl_LibReorderModules( p );
+            Vec_PtrForEachEntry( Rtl_Ntk_t *, p->vNtks, pNtk, i )
+                pNtk->iCopy = -1;
+            Vec_IntFreeP( &p->vDirects );
+        }
+    }
+    else
+    {
+        int Name1 = Wln_ReadFindToken( pModules[0], p->pManName );
+        int Name2 = Wln_ReadFindToken( pModules[1], p->pManName );
+        int iNtk  = Rtl_LibFindTwoModules( p, Name1, Name2 ); 
+        if ( iNtk == -1 )
+        {
+            printf( "Cannot find networks \"%s\" and \"%s\" in the design.\n", Rtl_LibStr(p, Name1), Rtl_LibStr(p, Name2) ); 
+            return;
+        }
+        else
+        {
+            int iNtk1 = iNtk >> 16;
+            int iNtk2 = iNtk & 0xFFFF;
+            Rtl_Ntk_t * pNtk1 = Rtl_LibNtk(p, iNtk1);
+            Rtl_Ntk_t * pNtk2 = Rtl_LibNtk(p, iNtk2);
+            assert( iNtk1 != iNtk2 );
+            if ( fInv )
+            {
+                printf( "Setting \"%s\" (appearing %d times) and \"%s\" (appearing %d times) as inverse-equivalent.\n", 
+                    Rtl_NtkName(pNtk1), Rtl_LibCountInsts(p, pNtk1), Rtl_NtkName(pNtk2), Rtl_LibCountInsts(p, pNtk2) );
+                if ( p->vInverses == NULL )
+                    p->vInverses = Vec_IntAlloc( 10 );
+                Vec_IntPushTwo( p->vInverses, pNtk1->NameId, pNtk2->NameId );
+            }
+            else
+            {
+                printf( "Replacing \"%s\" (appearing %d times) by \"%s\" (appearing %d times).\n", 
+                    Rtl_NtkName(pNtk1), Rtl_LibCountInsts(p, pNtk1), Rtl_NtkName(pNtk2), Rtl_LibCountInsts(p, pNtk2) );
+                pNtk1->iCopy = iNtk2;
+            //    Rtl_LibSetReplace( p, vGuide );
+                Rtl_LibUpdateBoxes( p );
+                Rtl_LibReorderModules( p );
+                if ( p->vDirects == NULL )
+                    p->vDirects = Vec_IntAlloc( 10 );
+                Vec_IntPushTwo( p->vDirects, pNtk1->NameId, pNtk2->NameId );
+            }
+        }
+    }
+}
+
+/**Function*************************************************************
+
+  Synopsis    []
+
+  Description []
+               
+  SideEffects []
+
+  SeeAlso     []
+
+***********************************************************************/
+void Wln_LibMarkHierarchy( Rtl_Lib_t * p, char ** ppModule, int nModules, int fVerbose )
+{
+    Rtl_Ntk_t * pNtk; int i;
+    if ( nModules == 0 ) // clean labels
+        Vec_PtrForEachEntry( Rtl_Ntk_t *, p->vNtks, pNtk, i )
+            pNtk->fRoot = 0;
+    for ( i = 0; i < nModules; i++ )
+    {
+        int iNtk = Rtl_LibReturnNtk( p, ppModule[i] );
+        if ( iNtk == -1 )
+            continue;
+        pNtk = Rtl_LibNtk( p, iNtk );
+        pNtk->fRoot = 1;
+        printf( "Marking module \"%s\" (appearing %d times in the hierarchy).\n", ppModule[i], Rtl_LibCountInsts(p, pNtk) );
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////

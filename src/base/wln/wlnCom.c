@@ -28,6 +28,9 @@ ABC_NAMESPACE_IMPL_START
 ////////////////////////////////////////////////////////////////////////
 
 static int  Abc_CommandYosys      ( Abc_Frame_t * pAbc, int argc, char ** argv );
+static int  Abc_CommandGraft      ( Abc_Frame_t * pAbc, int argc, char ** argv );
+static int  Abc_CommandHierarchy  ( Abc_Frame_t * pAbc, int argc, char ** argv );
+static int  Abc_CommandCollapse   ( Abc_Frame_t * pAbc, int argc, char ** argv );
 static int  Abc_CommandSolve      ( Abc_Frame_t * pAbc, int argc, char ** argv );
 static int  Abc_CommandPrint      ( Abc_Frame_t * pAbc, int argc, char ** argv );
 
@@ -53,7 +56,10 @@ static inline void        Wln_AbcUpdateRtl( Abc_Frame_t * pAbc, Rtl_Lib_t * pLib
 void Wln_Init( Abc_Frame_t * pAbc )
 {
     Cmd_CommandAdd( pAbc, "Word level", "%yosys",       Abc_CommandYosys,      0 );
-    Cmd_CommandAdd( pAbc, "Word level", "%solve",       Abc_CommandSolve,      0 );
+    Cmd_CommandAdd( pAbc, "Word level", "%graft",       Abc_CommandGraft,      0 );
+    Cmd_CommandAdd( pAbc, "Word level", "%hierarchy",   Abc_CommandHierarchy,   0 );
+    Cmd_CommandAdd( pAbc, "Word level", "%collapse",    Abc_CommandCollapse,   0 );
+    //Cmd_CommandAdd( pAbc, "Word level", "%solve",       Abc_CommandSolve,      0 );
     Cmd_CommandAdd( pAbc, "Word level", "%print",       Abc_CommandPrint,      0 );
 }
 
@@ -72,7 +78,6 @@ void Wln_End( Abc_Frame_t * pAbc )
 {
     Wln_AbcUpdateRtl( pAbc, NULL );
 }
-
 
 /**Function********************************************************************
 
@@ -213,6 +218,184 @@ usage:
   SeeAlso     []
 
 ******************************************************************************/
+int Abc_CommandGraft( Abc_Frame_t * pAbc, int argc, char ** argv )
+{
+    extern void Wln_LibGraftOne( Rtl_Lib_t * p, char ** pModules, int nModules, int fInv, int fVerbose );
+    Rtl_Lib_t * pLib = Wln_AbcGetRtl(pAbc);
+    char ** pArgvNew; int nArgcNew;
+    int c, fInv = 0, fVerbose  = 0;
+    Extra_UtilGetoptReset();
+    while ( ( c = Extra_UtilGetopt( argc, argv, "ivh" ) ) != EOF )
+    {
+        switch ( c )
+        {
+        case 'i':
+            fInv ^= 1;
+            break;
+        case 'v':
+            fVerbose ^= 1;
+            break;
+        case 'h':
+            goto usage;
+        default:
+            goto usage;
+        }
+    }
+    if ( pLib == NULL )
+    {
+        printf( "The design is not entered.\n" );
+        return 1;
+    }
+    pArgvNew = argv + globalUtilOptind;
+    nArgcNew = argc - globalUtilOptind;
+    if ( nArgcNew != 0 && nArgcNew != 2 )
+    {
+        Abc_Print( -1, "Abc_CommandGraft(): This command expects one AIG file name on the command line.\n" );
+        return 1;
+    }
+    Wln_LibGraftOne( pLib, pArgvNew, nArgcNew, fInv, fVerbose );
+    return 0;
+usage:
+    Abc_Print( -2, "usage: %%graft [-ivh] <module1_name> <module2_name>\n" );
+    Abc_Print( -2, "\t         replace instances of module1 by those of module2\n" );
+    Abc_Print( -2, "\t-i     : toggle using inverse grafting [default = %s]\n", fInv? "yes": "no" );
+    Abc_Print( -2, "\t-v     : toggle printing verbose information [default = %s]\n", fVerbose? "yes": "no" );
+    Abc_Print( -2, "\t-h     : print the command usage\n");
+    return 1;
+}
+
+/**Function********************************************************************
+
+  Synopsis    []
+
+  Description []
+
+  SideEffects []
+
+  SeeAlso     []
+
+******************************************************************************/
+int Abc_CommandHierarchy( Abc_Frame_t * pAbc, int argc, char ** argv )
+{
+    extern void Wln_LibMarkHierarchy( Rtl_Lib_t * p, char ** ppModule, int nModules, int fVerbose );
+    Rtl_Lib_t * pLib = Wln_AbcGetRtl(pAbc);
+    char ** pArgvNew; int nArgcNew;
+    int c,  fVerbose  = 0;
+    Extra_UtilGetoptReset();
+    while ( ( c = Extra_UtilGetopt( argc, argv, "vh" ) ) != EOF )
+    {
+        switch ( c )
+        {
+        case 'v':
+            fVerbose ^= 1;
+            break;
+        case 'h':
+            goto usage;
+        default:
+            goto usage;
+        }
+    }
+    if ( pLib == NULL )
+    {
+        printf( "The design is not entered.\n" );
+        return 1;
+    }
+    pArgvNew = argv + globalUtilOptind;
+    nArgcNew = argc - globalUtilOptind;
+    if ( nArgcNew < 0 )
+    {
+        Abc_Print( -1, "Abc_CommandHierarchy(): This command expects one AIG file name on the command line.\n" );
+        return 1;
+    }
+    Wln_LibMarkHierarchy( pLib, pArgvNew, nArgcNew, fVerbose );
+    return 0;
+usage:
+    Abc_Print( -2, "usage: %%hierarchy [-vh] <module_name>\n" );
+    Abc_Print( -2, "\t         marks the module whose instances may later be treated as black boxes\n" );
+    Abc_Print( -2, "\t-v     : toggle printing verbose information [default = %s]\n", fVerbose? "yes": "no" );
+    Abc_Print( -2, "\t-h     : print the command usage\n");
+    return 1;
+}
+
+/**Function********************************************************************
+
+  Synopsis    []
+
+  Description []
+
+  SideEffects []
+
+  SeeAlso     []
+
+******************************************************************************/
+int Abc_CommandCollapse( Abc_Frame_t * pAbc, int argc, char ** argv )
+{
+    extern Gia_Man_t * Rtl_LibCollapse( Rtl_Lib_t * p, char * pTopModule, int fRev, int fVerbose );
+    Gia_Man_t * pNew = NULL;
+    Rtl_Lib_t * pLib = Wln_AbcGetRtl(pAbc);
+    char * pTopModule = NULL;
+    int c, fInv = 0, fRev = 0, fVerbose  = 0;
+    Extra_UtilGetoptReset();
+    while ( ( c = Extra_UtilGetopt( argc, argv, "Tcrvh" ) ) != EOF )
+    {
+        switch ( c )
+        {
+        case 'T':
+            if ( globalUtilOptind >= argc )
+            {
+                Abc_Print( -1, "Command line switch \"-T\" should be followed by a file name.\n" );
+                goto usage;
+            }
+            pTopModule = argv[globalUtilOptind];
+            globalUtilOptind++;
+            break;
+        case 'c':
+            fInv ^= 1;
+            break;
+        case 'r':
+            fRev ^= 1;
+            break;
+        case 'v':
+            fVerbose ^= 1;
+            break;
+        case 'h':
+            goto usage;
+        default:
+            goto usage;
+        }
+    }
+    if ( pLib == NULL )
+    {
+        printf( "The design is not entered.\n" );
+        return 1;
+    }
+    pNew = Rtl_LibCollapse( pLib, pTopModule, fRev, fVerbose );
+    if ( fInv )
+        Gia_ManInvertPos( pNew );
+    Abc_FrameUpdateGia( pAbc, pNew );
+    return 0;
+usage:
+    Abc_Print( -2, "usage: %%collapse [-T <module>] [-crvh] <file_name>\n" );
+    Abc_Print( -2, "\t         collapse hierarchical design into an AIG\n" );
+    Abc_Print( -2, "\t-T     : specify the top module of the design [default = none]\n" );
+    Abc_Print( -2, "\t-c     : toggle complementing miter outputs after collapsing [default = %s]\n", fInv? "yes": "no" );
+    Abc_Print( -2, "\t-r     : toggle bit order reversal in the word-level IO [default = %s]\n", fRev? "yes": "no" );
+    Abc_Print( -2, "\t-v     : toggle printing verbose information [default = %s]\n", fVerbose? "yes": "no" );
+    Abc_Print( -2, "\t-h     : print the command usage\n");
+    return 1;
+}
+
+/**Function********************************************************************
+
+  Synopsis    []
+
+  Description []
+
+  SideEffects []
+
+  SeeAlso     []
+
+******************************************************************************/
 int Abc_CommandPrint( Abc_Frame_t * pAbc, int argc, char ** argv )
 {
     extern void Rtl_LibPrintStats( Rtl_Lib_t * p );
@@ -276,7 +459,7 @@ usage:
 int Abc_CommandSolve( Abc_Frame_t * pAbc, int argc, char ** argv )
 {
     extern void Rtl_LibBlast( Rtl_Lib_t * pLib );
-    extern void Rtl_LibBlast2( Rtl_Lib_t * pLib, Vec_Int_t * vRoots );
+    extern void Rtl_LibBlast2( Rtl_Lib_t * pLib, Vec_Int_t * vRoots, int fInv );
     extern void Rtl_LibSolve( Rtl_Lib_t * pLib, void * pNtk );
     extern void Rtl_LibPreprocess( Rtl_Lib_t * pLib );
     extern void Wln_SolveWithGuidance( char * pFileName, Rtl_Lib_t * p );
@@ -327,7 +510,7 @@ int Abc_CommandSolve( Abc_Frame_t * pAbc, int argc, char ** argv )
         if ( fOldBlast )
             Rtl_LibBlast( pLib );
         else
-            Rtl_LibBlast2( pLib, NULL );
+            Rtl_LibBlast2( pLib, NULL, 0 );
         if ( fPrepro )
             Rtl_LibPreprocess( pLib );
         Rtl_LibSolve( pLib, NULL );
