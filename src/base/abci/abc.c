@@ -1886,18 +1886,24 @@ usage:
 ***********************************************************************/
 int Abc_CommandPrintFactor( Abc_Frame_t * pAbc, int argc, char ** argv )
 {
+    extern void Abc_NodePrintSop( FILE * pFile, Abc_Obj_t * pNode, int fUseRealNames );
+    extern void Abc_NtkPrintSop( FILE * pFile, Abc_Ntk_t * pNtk, int fUseRealNames );
+
     Abc_Ntk_t * pNtk = Abc_FrameReadNtk(pAbc);
     Abc_Obj_t * pNode;
-    int c;
+    int c, fSop = 0;
     int fUseRealNames;
 
     // set defaults
     fUseRealNames = 1;
     Extra_UtilGetoptReset();
-    while ( ( c = Extra_UtilGetopt( argc, argv, "nh" ) ) != EOF )
+    while ( ( c = Extra_UtilGetopt( argc, argv, "snh" ) ) != EOF )
     {
         switch ( c )
         {
+        case 's':
+            fSop ^= 1;
+            break;
         case 'n':
             fUseRealNames ^= 1;
             break;
@@ -1934,16 +1940,23 @@ int Abc_CommandPrintFactor( Abc_Frame_t * pAbc, int argc, char ** argv )
             Abc_Print( -1, "Cannot find node \"%s\".\n", argv[globalUtilOptind] );
             return 1;
         }
-        Abc_NodePrintFactor( stdout, pNode, fUseRealNames );
+        if ( fSop )
+            Abc_NodePrintSop( stdout, pNode, fUseRealNames );
+        else
+            Abc_NodePrintFactor( stdout, pNode, fUseRealNames );
         return 0;
     }
     // print the nodes
-    Abc_NtkPrintFactor( stdout, pNtk, fUseRealNames );
+    if ( fSop )
+        Abc_NtkPrintSop( stdout, pNtk, fUseRealNames );
+    else
+        Abc_NtkPrintFactor( stdout, pNtk, fUseRealNames );
     return 0;
 
 usage:
-    Abc_Print( -2, "usage: print_factor [-nh] <node>\n" );
-    Abc_Print( -2, "\t        prints the factored forms of nodes\n" );
+    Abc_Print( -2, "usage: print_factor [-snh] <node>\n" );
+    Abc_Print( -2, "\t        prints the factored forms (FFs) of nodes\n" );
+    Abc_Print( -2, "\t-s    : toggles printing SOP instead of FF [default = %s]\n", fSop? "SOP": "FF" );
     Abc_Print( -2, "\t-n    : toggles real/dummy fanin names [default = %s]\n", fUseRealNames? "real": "dummy" );
     Abc_Print( -2, "\t-h    : print the command usage\n");
     Abc_Print( -2, "\tnode  : (optional) one node to consider\n");
@@ -14103,6 +14116,7 @@ int Abc_CommandTest( Abc_Frame_t * pAbc, int argc, char ** argv )
     //Extra_SimulationTest( nDivMax, nNumOnes, fNewOrder );
     //Mnist_ExperimentWithScaling( nDecMax );
     //Gyx_ProblemSolveTest();
+    Exa_ManExactSynthesis4Vars();
     {
         extern Abc_Ntk_t * Abc_NtkFromArray();
         Abc_Ntk_t * pNtkRes = Abc_NtkFromArray();
@@ -46191,6 +46205,7 @@ usage:
 int Abc_CommandAbc9Qbf( Abc_Frame_t * pAbc, int argc, char ** argv )
 {
     extern void Gia_QbfDumpFile( Gia_Man_t * pGia, int nPars );
+    extern void Gia_QbfDumpFileInv( Gia_Man_t * pGia, int nPars );
     extern int Gia_QbfSolve( Gia_Man_t * pGia, int nPars, int nIterLimit, int nConfLimit, int nTimeOut, int nEncVars, int fGlucose, int fVerbose );
     int c, nPars   = -1;
     int nIterLimit =  0;
@@ -46198,10 +46213,11 @@ int Abc_CommandAbc9Qbf( Abc_Frame_t * pAbc, int argc, char ** argv )
     int nTimeOut   =  0;
     int nEncVars   =  0;
     int fDumpCnf   =  0;
+    int fDumpCnf2  =  0;
     int fGlucose   =  0;
     int fVerbose   =  0;
     Extra_UtilGetoptReset();
-    while ( ( c = Extra_UtilGetopt( argc, argv, "PICTKdgvh" ) ) != EOF )
+    while ( ( c = Extra_UtilGetopt( argc, argv, "PICTKdegvh" ) ) != EOF )
     {
         switch ( c )
         {
@@ -46263,6 +46279,9 @@ int Abc_CommandAbc9Qbf( Abc_Frame_t * pAbc, int argc, char ** argv )
         case 'd':
             fDumpCnf ^= 1;
             break;
+        case 'e':
+            fDumpCnf2 ^= 1;
+            break;
         case 'g':
             fGlucose ^= 1;
             break;
@@ -46297,19 +46316,22 @@ int Abc_CommandAbc9Qbf( Abc_Frame_t * pAbc, int argc, char ** argv )
     }
     if ( fDumpCnf )
         Gia_QbfDumpFile( pAbc->pGia, nPars );
+    else if ( fDumpCnf2 )
+        Gia_QbfDumpFileInv( pAbc->pGia, nPars );
     else
         Gia_QbfSolve( pAbc->pGia, nPars, nIterLimit, nConfLimit, nTimeOut, nEncVars, fGlucose, fVerbose );
     return 0;
 
 usage:
-    Abc_Print( -2, "usage: &qbf [-PICTK num] [-dgvh]\n" );
+    Abc_Print( -2, "usage: &qbf [-PICTK num] [-degvh]\n" );
     Abc_Print( -2, "\t         solves QBF problem EpVxM(p,x)\n" );
     Abc_Print( -2, "\t-P num : number of parameters p (should be the first PIs) [default = %d]\n", nPars );
     Abc_Print( -2, "\t-I num : quit after the given iteration even if unsolved [default = %d]\n", nIterLimit );
     Abc_Print( -2, "\t-C num : conflict limit per problem [default = %d]\n", nConfLimit );
     Abc_Print( -2, "\t-T num : global timeout [default = %d]\n", nTimeOut );
     Abc_Print( -2, "\t-K num : the number of input bits (for encoding miters only) [default = %d]\n", nEncVars );
-    Abc_Print( -2, "\t-d     : toggle dumping QDIMACS file instead of solving [default = %s]\n", fDumpCnf? "yes": "no" );
+    Abc_Print( -2, "\t-d     : toggle dumping QDIMACS file instead of solving (complemented QBF) [default = %s]\n", fDumpCnf? "yes": "no" );
+    Abc_Print( -2, "\t-e     : toggle dumping QDIMACS file instead of solving (original QBF) [default = %s]\n", fDumpCnf2? "yes": "no" );
     Abc_Print( -2, "\t-g     : toggle using Glucose 3.0 by Gilles Audemard and Laurent Simon [default = %s]\n", fGlucose? "yes": "no" );
     Abc_Print( -2, "\t-v     : toggle verbose output [default = %s]\n", fVerbose? "yes": "no" );
     Abc_Print( -2, "\t-h     : print the command usage\n");
